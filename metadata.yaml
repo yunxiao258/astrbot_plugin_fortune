@@ -1,0 +1,7 @@
+name: astrbot_plugin_fortune
+display_name: 运势占卜
+desc: 运势占卜：星座/生肖/每日运势/抽签
+help: 发送「/运势」查看今日运势（每会话每日一次）；「/星座 <星座名>」查看星座今日运势；「/生肖 <生肖>」查看生肖今日运势；「/抽签 <问题>」抽签占卜；「/占卜」查看本帮助
+version: 1.0.0
+author: 云晓
+repo: https://github.com/yunxiao258/astrbot_plugin_fortune

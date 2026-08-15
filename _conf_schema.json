@@ -1,0 +1,22 @@
+{
+  "enable_persistence": {
+    "description": "是否启用磁盘持久化（关闭后每日运势仅保存在内存中，重启后失效）",
+    "type": "bool",
+    "default": true
+  },
+  "max_daily_records": {
+    "description": "每会话每日运势记录的最大条数，超出时自动清理最旧记录，防止数据无限增长",
+    "type": "int",
+    "default": 1000
+  },
+  "keep_days": {
+    "description": "每日运势记录保留天数，过期记录自动清理",
+    "type": "int",
+    "default": 7
+  },
+  "lucky_number_max": {
+    "description": "今日运势幸运数字范围上限（1~N 之间随机）",
+    "type": "int",
+    "default": 99
+  }
+}
