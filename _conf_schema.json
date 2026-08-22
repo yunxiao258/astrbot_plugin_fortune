@@ -18,5 +18,10 @@
     "description": "今日运势幸运数字范围上限（1~N 之间随机）",
     "type": "int",
     "default": 99
+  },
+  "streak_bonus_enabled": {
+    "description": "是否启用连续占卜加成（连续第 N 天额外 +2 分/天，封顶 +10）",
+    "type": "bool",
+    "default": true
   }
 }

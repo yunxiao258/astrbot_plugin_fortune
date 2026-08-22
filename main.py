@@ -1,4 +1,4 @@
-"""AstrBot 运势占卜插件：今日运势、星座运势、生肖运势、抽签占卜、帮助"""
+"""AstrBot 运势占卜插件：今日运势（连续占卜加成）、欧皇榜、星座、生肖、抽签、缘分配对"""
 
 import hashlib
 import json
@@ -15,8 +15,8 @@ from astrbot.api.star import Context, Star, register
 
 PLUGIN_NAME = "astrbot_plugin_fortune"
 PLUGIN_AUTHOR = "云晓"
-PLUGIN_DESC = "运势占卜：星座/生肖/每日运势/抽签"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_DESC = "运势占卜：星座/生肖/每日运势/抽签/欧皇榜/缘分配对"
+PLUGIN_VERSION = "1.1.0"
 
 # ==================== 内容库 ====================
 
@@ -197,14 +197,25 @@ LOTS = [
     {"no": 30, "grade": "下", "poem": "前路崎岖多坎坷，谨慎前行防小人。", "explain": "近日需多加防范，少言慎行，重要事务可缓一缓。"},
 ]
 
+# 缘分等级（分数下限 → (名称, 评语)；按分数从高到低匹配）
+AFFINITY_LEVELS = [
+    (95, "天作之合", "前世五百次回眸，才换来今生的相遇，请务必珍惜彼此！"),
+    (85, "情投意合", "默契满分，聊什么都合拍，这段缘分值得用心经营。"),
+    (70, "暗生情愫", "空气中似乎有些微妙的气氛，也许可以更进一步。"),
+    (50, "缘分尚浅", "目前只是普通朋友，多制造相处机会或许会有转机。"),
+    (0, "相看两厌", "磁场不太合拍，保持距离反而是种美好。"),
+]
+
 # 帮助文本
 HELP_TEXT = (
-    "🔮 运势占卜插件 v1.0.0\n"
+    "🔮 运势占卜插件 v1.1.0\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
-    "📅 /运势            今日运势（每会话每日一次）\n"
+    "📅 /运势            今日运势（每人每日一次，连续占卜有加成）\n"
+    "🏆 /运势榜          群内今日欧皇榜（按分数 Top10）\n"
     "⭐ /星座 <星座名>   星座今日运势（支持 双鱼/双鱼座/水瓶 等别名）\n"
     "🐭 /生肖 <生肖>    生肖今日运势（如 牛 / 属牛 / 生肖牛）\n"
     "🎋 /抽签 <问题>    抽签占卜（同一问题当日结果一致）\n"
+    "💞 /缘分 <对方>    缘分配对（@对方或输入名字，当日结果一致）\n"
     "❓ /占卜            显示本帮助"
 )
 
@@ -297,6 +308,22 @@ class FortunePlugin(Star):
             return str(umo)
         return str(getattr(event, "session", "default"))
 
+    def _user_key(self, event: AstrMessageEvent) -> str:
+        """用户级键：会话|发送者ID（无发送者ID 时退化为会话键，兼容旧数据）"""
+        session = self._session_key(event)
+        try:
+            uid = str(event.get_sender_id() or "").strip()
+        except Exception:
+            uid = ""
+        return f"{session}|{uid}" if uid else session
+
+    def _sender_name(self, event: AstrMessageEvent) -> str:
+        """获取发送者昵称（失败返回空串）"""
+        try:
+            return str(event.get_sender_name() or "").strip()
+        except Exception:
+            return ""
+
     # ==================== 指令参数解析 ====================
 
     @staticmethod
@@ -313,13 +340,32 @@ class FortunePlugin(Star):
 
     # ==================== 今日运势 ====================
 
-    def _generate_daily_fortune(self) -> dict:
-        """随机生成一份今日运势内容（随机，当日稳定性由持久化保证）"""
+    @staticmethod
+    def _grade_for_score(score: int) -> dict:
+        """按分数定位档位信息（GRADE_INFO 中包含该分数的档）"""
+        for info in GRADE_INFO:
+            if info["min"] <= score <= info["max"]:
+                return info
+        return GRADE_INFO[-1]
+
+    def _generate_daily_fortune(self, streak: int = 1) -> dict:
+        """随机生成一份今日运势内容（随机，当日稳定性由持久化保证）。
+
+        连续占卜加成：连续第 N 天额外 +2 分/天，封顶 +10；加成后按最终分重新定档。
+        """
         rnd = random.Random()
         idx = rnd.choices(range(len(GRADE_INFO)), weights=GRADE_WEIGHTS, k=1)[0]
         info = GRADE_INFO[idx]
+        score = rnd.randint(info["min"], info["max"])
+        # 连续占卜加成
+        bonus = 0
+        if self._bool_cfg("streak_bonus_enabled", True):
+            bonus = min(10, max(0, streak - 1) * 2)
+        if bonus > 0:
+            score = min(99, score + bonus)
+            info = self._grade_for_score(score)
         return {
-            "score": rnd.randint(info["min"], info["max"]),
+            "score": score,
             "grade": info["grade"],
             "star": info["star"],
             "comment": rnd.choice(info["comments"]),
@@ -329,24 +375,44 @@ class FortunePlugin(Star):
             "ji": rnd.choice(JI_LIST),
             "line": rnd.choice(ONE_LINERS),
             "time": datetime.now().strftime("%H:%M"),
+            "streak": int(streak),
+            "bonus": int(bonus),
         }
 
-    def _get_daily_fortune(self, session_key: str) -> tuple[dict, bool]:
-        """获取会话今日运势：(内容, 是否今日新生成)。
+    def _get_daily_fortune(self, event: AstrMessageEvent) -> tuple[dict, bool]:
+        """获取用户今日运势：(内容, 是否今日新生成)。
 
-        每会话每日一次：当日已生成则直接返回已存内容，否则生成并持久化。
+        每用户每日一次：当日已生成则直接返回已存内容，否则生成并持久化。
+        连续天数由昨日记录推算（昨日同键存在则 +1，否则从第 1 天开始）。
         """
         today = datetime.now().strftime("%Y-%m-%d")
+        key = self._user_key(event)
         daily = self._data["daily"].setdefault(today, {})
-        existing = daily.get(session_key)
+        existing = daily.get(key)
         if existing:
             return existing, False
-        fortune = self._generate_daily_fortune()
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        prev = self._data["daily"].get(yesterday, {}).get(key)
+        try:
+            streak = int(prev.get("streak", 0)) + 1 if prev else 1
+        except (AttributeError, TypeError, ValueError):
+            streak = 1
+        fortune = self._generate_daily_fortune(streak)
+        name = self._sender_name(event)
+        if name:
+            fortune["name"] = name[:20]
+        else:
+            try:
+                uid = str(event.get_sender_id() or "").strip()
+            except Exception:
+                uid = ""
+            if uid:
+                fortune["name"] = f"用户{uid[-4:]}"
         # 会话记录数上限保护：超出时清理最旧记录（dict 有序，首个即最旧）
         max_records = max(1, self._int_cfg("max_daily_records", 1000))
         if len(daily) >= max_records:
             del daily[next(iter(daily))]
-        daily[session_key] = fortune
+        daily[key] = fortune
         self._save()
         return fortune, True
 
@@ -365,8 +431,49 @@ class FortunePlugin(Star):
             f"💬 {fortune['comment']}",
             f"🌟 {fortune['line']}",
         ]
+        try:
+            streak = int(fortune.get("streak", 1))
+        except (TypeError, ValueError):
+            streak = 1
+        if streak > 1:
+            bonus = fortune.get("bonus", 0)
+            if isinstance(bonus, (int, float)) and bonus > 0:
+                lines.append(f"🔥 连续占卜 {streak} 天，获得加成 +{int(bonus)} 分")
+            else:
+                lines.append(f"🔥 连续占卜 {streak} 天")
         if not is_new:
             lines.append(f"⏱️ 今日已占卜过（{fortune['time']}），命运不变哦～")
+        return "\n".join(lines)
+
+    def _leaderboard_text(self, event: AstrMessageEvent) -> str:
+        """渲染当前会话今日欧皇榜（按分数 Top10）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        prefix = self._session_key(event) + "|"
+        rows = []
+        for k, rec in self._data["daily"].get(today, {}).items():
+            if not k.startswith(prefix):
+                continue
+            try:
+                score = int(rec.get("score", 0))
+            except (TypeError, ValueError):
+                continue
+            name = str(rec.get("name") or k.rsplit("|", 1)[-1])
+            rows.append((score, name, str(rec.get("grade", ""))))
+        if not rows:
+            return (
+                f"🏆 欧皇榜 · {today}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📭 今天还没有人占卜过运势\n发送 /运势 抢占榜首吧！"
+            )
+        rows.sort(key=lambda r: -r[0])
+        medals = ["🥇", "🥈", "🥉"]
+        lines = [f"🏆 欧皇榜 · {today}（共 {len(rows)} 人占卜）", "━━━━━━━━━━━━━━━━━━━━━━"]
+        for i, (score, name, grade) in enumerate(rows[:10]):
+            icon = medals[i] if i < 3 else f"{i + 1}."
+            display = name if len(name) <= 12 else name[:11] + "…"
+            lines.append(f"{icon} {display} · {score}分 · {grade}")
+        champion = rows[0]
+        lines.append(f"👑 今日欧皇：{champion[1]}（{champion[0]} 分）")
         return "\n".join(lines)
 
     # ==================== 星座 / 生肖解析与运势 ====================
@@ -471,18 +578,69 @@ class FortunePlugin(Star):
             f"💡 解签: {lot['explain']}",
         ])
 
+    # ==================== 缘分配对 ====================
+
+    @staticmethod
+    def _affinity_score(a: str, b: str, date: str) -> int:
+        """按"双方标识+日期"哈希生成缘分值（5~99，同日同对结果一致且与顺序无关）"""
+        pair = sorted([str(a or "me"), str(b or "other")])
+        digest = int(hashlib.md5(f"{date}|{pair[0]}|{pair[1]}".encode("utf-8")).hexdigest(), 16)
+        return 5 + digest % 95
+
+    @classmethod
+    def _affinity_level(cls, score: int) -> tuple[str, str]:
+        """按分数定位缘分等级：(名称, 评语)"""
+        for min_score, name, comment in AFFINITY_LEVELS:
+            if score >= min_score:
+                return name, comment
+        return AFFINITY_LEVELS[-1][1], AFFINITY_LEVELS[-1][2]
+
+    def _format_affinity(self, me_name: str, other: str, score: int, date: str) -> str:
+        """格式化缘分配对输出"""
+        level, comment = self._affinity_level(score)
+        hearts = "💕" * max(1, round(score / 20))
+        return "\n".join([
+            f"💞 缘分配对 · {date}",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"👫 {me_name} ❤️ {other}",
+            f"{hearts}",
+            f"💗 缘分值: {score}/100 · {level}",
+            f"💬 {comment}",
+        ])
+
+    def _extract_at_target(self, event: AstrMessageEvent) -> str:
+        """从消息组件中提取被 @ 者的 QQ 号（无则返回空串）"""
+        try:
+            from astrbot.api.message_components import At
+            for comp in event.get_messages() or []:
+                if isinstance(comp, At):
+                    qq = str(getattr(comp, "qq", "") or "").strip()
+                    if qq:
+                        return qq
+        except Exception:
+            pass
+        return ""
+
     # ==================== 指令处理 ====================
 
     @filter.command("运势", priority=200)
     async def cmd_daily(self, event: AstrMessageEvent) -> MessageEventResult:
-        """今日运势（每会话每日一次，同日重复查询返回当天已生成的运势）"""
+        """今日运势（每人每日一次，同日重复查询返回当天已生成的运势）"""
         try:
-            key = self._session_key(event)
-            fortune, is_new = self._get_daily_fortune(key)
+            fortune, is_new = self._get_daily_fortune(event)
             return self._send_text(event, self._format_daily(fortune, is_new))
         except Exception as e:
             logger.error(f"今日运势失败: {e}")
             return self._send_text(event, f"❌ 运势生成失败: {str(e)}")
+
+    @filter.command("运势榜", priority=200)
+    async def cmd_leaderboard(self, event: AstrMessageEvent) -> MessageEventResult:
+        """群内今日欧皇榜：按当日已占卜的分数排序 Top10"""
+        try:
+            return self._send_text(event, self._leaderboard_text(event))
+        except Exception as e:
+            logger.error(f"欧皇榜查询失败: {e}")
+            return self._send_text(event, f"❌ 欧皇榜生成失败: {str(e)}")
 
     @filter.command("星座", priority=200)
     async def cmd_sign(self, event: AstrMessageEvent) -> MessageEventResult:
@@ -536,6 +694,28 @@ class FortunePlugin(Star):
     async def cmd_help(self, event: AstrMessageEvent) -> MessageEventResult:
         """运势占卜帮助列表"""
         return self._send_text(event, HELP_TEXT)
+
+    @filter.command("缘分", priority=200)
+    async def cmd_affinity(self, event: AstrMessageEvent) -> MessageEventResult:
+        """缘分配对：/缘分 <@对方 | 名字>，同日同对结果一致且与发起顺序无关"""
+        other = self._extract_at_target(event) or self._args(event, "缘分")
+        if not other:
+            return self._send_text(event, "❌ 用法: /缘分 <@对方 或 名字>\n例如: /缘分 小明")
+        try:
+            me_id = ""
+            try:
+                me_id = str(event.get_sender_id() or "").strip()
+            except Exception:
+                pass
+            if not me_id:
+                me_id = self._session_key(event)
+            me_name = self._sender_name(event) or f"用户{me_id[-4:]}"
+            today = datetime.now().strftime("%Y-%m-%d")
+            score = self._affinity_score(me_id, other, today)
+            return self._send_text(event, self._format_affinity(me_name, other, score, today))
+        except Exception as e:
+            logger.error(f"缘分配对失败: {e}")
+            return self._send_text(event, f"❌ 缘分配对失败: {str(e)}")
 
     # ==================== 工具方法 ====================
 
