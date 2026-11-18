@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from datetime import datetime
 
-sys.path.insert(0, r"D:\astrbot\data\plugins")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from astrbot_plugin_fortune.main import (  # noqa: E402
     ADVICES,

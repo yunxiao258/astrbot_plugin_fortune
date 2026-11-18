@@ -2,13 +2,14 @@
 """fortune 插件新功能测试（v1.1.0）：用户级运势、连续占卜加成、欧皇榜、缘分配对。"""
 
 import asyncio
+import os
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
-sys.path.insert(0, r"D:\astrbot\data\plugins")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from astrbot_plugin_fortune.main import (  # noqa: E402
     AFFINITY_LEVELS,

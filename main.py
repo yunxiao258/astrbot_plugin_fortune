@@ -16,7 +16,7 @@ from astrbot.api.star import Context, Star, register
 PLUGIN_NAME = "astrbot_plugin_fortune"
 PLUGIN_AUTHOR = "云晓"
 PLUGIN_DESC = "运势占卜：星座/生肖/每日运势/抽签/欧皇榜/缘分配对"
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.1.1"
 
 # ==================== 内容库 ====================
 
