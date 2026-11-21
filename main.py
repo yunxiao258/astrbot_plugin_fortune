@@ -16,7 +16,12 @@ from astrbot.api.star import Context, Star, register
 PLUGIN_NAME = "astrbot_plugin_fortune"
 PLUGIN_AUTHOR = "云晓"
 PLUGIN_DESC = "运势占卜：星座/生肖/每日运势/抽签/欧皇榜/缘分配对"
-PLUGIN_VERSION = "1.1.1"
+try:
+    from .hub_bridge import HUB_PROTOCOL_VERSION, emit_hub_event
+except ImportError:
+    from hub_bridge import HUB_PROTOCOL_VERSION, emit_hub_event
+
+PLUGIN_VERSION = "1.2.0"
 
 # ==================== 内容库 ====================
 
@@ -222,6 +227,7 @@ HELP_TEXT = (
 
 @register(PLUGIN_NAME, PLUGIN_AUTHOR, PLUGIN_DESC, PLUGIN_VERSION)
 class FortunePlugin(Star):
+    HUB_PROTOCOL_VERSION = HUB_PROTOCOL_VERSION
     """运势占卜插件：今日运势、星座运势、生肖运势、抽签占卜"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None, data_dir: str = None):
@@ -628,6 +634,14 @@ class FortunePlugin(Star):
         """今日运势（每人每日一次，同日重复查询返回当天已生成的运势）"""
         try:
             fortune, is_new = self._get_daily_fortune(event)
+            if is_new:
+                gid = ""
+                try:
+                    gid = str(event.get_group_id() or "")
+                except Exception:
+                    pass
+                uid = str(event.get_sender_id() or "") if callable(getattr(event, "get_sender_id", None)) else self._user_key(event)
+                emit_hub_event(PLUGIN_NAME, "fortune.drawn", {"user_id": uid, "nickname": fortune.get("name", ""), "score": int(fortune.get("score", 0)), "grade": fortune.get("grade", ""), "group_id": gid}, self.context)
             return self._send_text(event, self._format_daily(fortune, is_new))
         except Exception as e:
             logger.error(f"今日运势失败: {e}")
@@ -730,3 +744,21 @@ class FortunePlugin(Star):
             self._save()
         except Exception:
             pass
+
+    def hub_status(self) -> dict:
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_cnt = len(self._data.get("daily", {}).get(today, {}) or {})
+        return {
+            "version": PLUGIN_VERSION,
+            "status": "online",
+            "metrics": {"今日占卜": today_cnt, "累计天数": len(self._data.get("daily", {}))},
+            "actions": ["get_ranking"],
+        }
+
+    async def hub_action(self, action: str, params: dict | None = None) -> dict:
+        if action == "get_ranking":
+            today = datetime.now().strftime("%Y-%m-%d")
+            recs = list((self._data.get("daily", {}).get(today, {}) or {}).values())
+            recs.sort(key=lambda x: -int(x.get("score", 0)))
+            return {"ok": True, "data": {"date": today, "top": [{"name": r.get("name", ""), "score": r.get("score", 0), "grade": r.get("grade", "")} for r in recs[:10]]}}
+        return {"ok": False, "error": f"不支持的动作：{action}"}
